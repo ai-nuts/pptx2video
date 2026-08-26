@@ -526,6 +526,12 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--animation-pointer",
+        choices=("none", "cursor", "laser"),
+        default="none",
+        help="Pointer that follows native animation targets, independent of Spotlight.",
+    )
+    parser.add_argument(
         "--animation-order-policy",
         choices=("auto", "animation-pane", "reading-order"),
         default="auto",
@@ -884,6 +890,8 @@ def main() -> int:
         str(frames_dir),
         "--out",
         str(raw_path),
+        "--animation-pointer",
+        args.animation_pointer,
     )
     if int(manifest.get("effect_count") or 0) > 0:
         render_command.append("--require-animations")

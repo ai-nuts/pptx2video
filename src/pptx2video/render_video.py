@@ -126,6 +126,7 @@ INK_TIGHTEN_PAD_FRAC = float(os.environ.get("VIDEO_SPOTLIGHT_INK_PAD", "0.012"))
 INK_TIGHTEN_CARD_DELTA = float(os.environ.get("VIDEO_SPOTLIGHT_CARD_DELTA", "24"))
 INK_TIGHTEN_CARD_UNIFORM = float(os.environ.get("VIDEO_SPOTLIGHT_CARD_UNIFORM", "0.6"))
 CURSOR_MOVE_SECONDS = 0.55
+ANIMATION_POINTER_STYLES = {"none", "cursor", "laser"}
 CURSOR_POINTER_FILL = "0x1E293B"
 CURSOR_POINTER_BORDER = "0xF8FAFC"
 CURSOR_POINTER_SHADOW = "0x000000"
@@ -1952,6 +1953,45 @@ def _cursor_overlay_intervals(
     return intervals, points[0].start, max(point.end for point in points)
 
 
+def _animation_pointer_cues(
+    assets: AnimationSlideAssets | None,
+    *,
+    style: str,
+    width: int,
+    height: int,
+    segment_end: float,
+) -> list[VisualCue]:
+    """Point at the rendered pixels for each native animation group."""
+    if style not in ANIMATION_POINTER_STYLES:
+        raise ValueError(f"unsupported animation pointer style {style!r}")
+    if style == "none" or assets is None:
+        return []
+
+    grouped: dict[float, list[AnimationLayer]] = {}
+    for layer in sorted(
+        assets.layers,
+        key=lambda item: (item.effect.start, item.effect.order),
+    ):
+        grouped.setdefault(round(layer.effect.start, 3), []).append(layer)
+
+    cues: list[VisualCue] = []
+    for start, layers in grouped.items():
+        target = layers[0]
+        cues.append(
+            VisualCue(
+                cue_type="cursor" if style == "cursor" else "highlight",
+                start=start,
+                end=segment_end,
+                point=(
+                    _clamp01((target.x + target.width / 2.0) / width),
+                    _clamp01((target.y + target.height / 2.0) / height),
+                ),
+                style=style,
+            )
+        )
+    return cues
+
+
 def _piecewise_overlay_expr(intervals: list[tuple[float, float, str, str]], *, axis: int) -> str:
     if not intervals:
         return "0"
@@ -2304,6 +2344,7 @@ def write_animation_render_report(
     fps: int,
     width: int,
     height: int,
+    animation_pointer: str,
 ) -> dict[str, object]:
     """Persist the exact Author Notes animation mapping rendered into MP4 pixels."""
     segment_start = start_pad
@@ -2371,6 +2412,7 @@ def write_animation_render_report(
         "pad_tail": pad_tail,
         "fps": fps,
         "resolution": {"width": width, "height": height},
+        "animation_pointer": animation_pointer,
         "slides": slides,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2380,7 +2422,8 @@ def write_animation_render_report(
 def encode_segment(pair: SlidePair, out_seg: Path, *,
                    width: int, height: int, fps: int, pad_tail: float,
                    ffmpeg: str, visual_cues: list[VisualCue] | None = None,
-                   animation_assets: AnimationSlideAssets | None = None) -> None:
+                   animation_assets: AnimationSlideAssets | None = None,
+                   animation_pointer: str = "none") -> None:
     """Render one PNG + one MP3 → an MP4 segment of length audio + pad_tail.
 
     Image is scaled to fit `width`x`height` while preserving aspect ratio,
@@ -2410,6 +2453,24 @@ def encode_segment(pair: SlidePair, out_seg: Path, *,
         cursor_cues = []
         laser_cues = []
         spotlight_cues = []
+
+    animation_pointer_cues = _animation_pointer_cues(
+        animation_assets,
+        style=animation_pointer,
+        width=width,
+        height=height,
+        segment_end=total_dur,
+    )
+    if animation_pointer == "cursor":
+        cursor_cues = sorted(
+            [*cursor_cues, *animation_pointer_cues],
+            key=lambda item: (item.start, item.end),
+        )
+    elif animation_pointer == "laser":
+        laser_cues = sorted(
+            [*laser_cues, *animation_pointer_cues],
+            key=lambda item: (item.start, item.end),
+        )
 
     # apad pads the audio with silence so we don't depend on -shortest and risk
     # the video ending mid-word. We intentionally use bare `apad` rather than
@@ -2833,6 +2894,8 @@ def main() -> int:
     ap.add_argument("--animation-report-out", default=None,
                     help="Persistent animation render report JSON. Defaults to "
                          "<out_stem>_animation_report.json when animations are rendered.")
+    ap.add_argument("--animation-pointer", choices=tuple(sorted(ANIMATION_POINTER_STYLES)), default="none",
+                    help="Pointer that follows native animation targets, independent of Spotlight.")
     ap.add_argument("--require-animations", action="store_true",
                     help="Fail unless a non-empty, Edge-aligned animation manifest is rendered.")
     ap.add_argument("--frames-only", action="store_true",
@@ -2882,6 +2945,8 @@ def main() -> int:
         sys.exit("[render_video] --require-animations requires --animation-manifest")
     if animation_report_path is not None and animation_manifest_path is None:
         sys.exit("[render_video] --animation-report-out requires --animation-manifest")
+    if args.animation_pointer != "none" and animation_manifest_path is None:
+        sys.exit("[render_video] --animation-pointer requires --animation-manifest")
     if args.animation_source != "auto" and animation_manifest_path is None:
         sys.exit("[render_video] --animation-source requires --animation-manifest")
     if animation_manifest_path is not None and args.animation_source != "auto":
@@ -2972,6 +3037,10 @@ def main() -> int:
         pairs,
         pad_tail=args.pad_tail,
     )
+    if args.animation_pointer != "none" and not any(
+        slide.effects for slide in animation_map.values()
+    ):
+        sys.exit("[render_video] --animation-pointer requires native animation effects")
     if animation_map and animation_source == "svg" and not use_svg:
         sys.exit(
             "[render_video] Author Notes animations require SVG frame rendering; "
@@ -3050,7 +3119,8 @@ def main() -> int:
                        width=width, height=height, fps=args.fps,
                        pad_tail=args.pad_tail, ffmpeg=ffmpeg,
                        visual_cues=visual_cue_map.get(pair.index),
-                       animation_assets=animation_assets.get(pair.index))
+                       animation_assets=animation_assets.get(pair.index),
+                       animation_pointer=args.animation_pointer)
         segments.append(seg_path)
 
     concat_segments(segments, out_path, ffmpeg,
@@ -3091,6 +3161,7 @@ def main() -> int:
             fps=args.fps,
             width=width,
             height=height,
+            animation_pointer=args.animation_pointer,
         )
         print(
             f"  animations: {animation_report['effect_count']} effect(s) → "
