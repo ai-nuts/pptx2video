@@ -24,6 +24,9 @@ installed public CLI for all ordinary rendering:
 pptx2video render <input.pptx> <new-output-directory> --resolution 1080p
 ```
 
+Add `--animation-pointer cursor|laser` to follow native animation targets; it is
+independent of Spotlight and defaults to `none`.
+
 Do not import or execute private Paper2Video or ResearchStudio scripts. If the
 CLI is unavailable, install the runtime from the public repository before
 continuing:

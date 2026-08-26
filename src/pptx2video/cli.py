@@ -287,6 +287,8 @@ def _render(args: argparse.Namespace) -> int:
         args.rate,
         "--highlight-style",
         args.highlight_style,
+        "--animation-pointer",
+        args.animation_pointer,
     ]
     if args.voice:
         command.extend(["--voice", args.voice])
@@ -459,6 +461,12 @@ def _parser() -> argparse.ArgumentParser:
             "spotlight_laser",
         ),
         default="spotlight_laser",
+    )
+    render.add_argument(
+        "--animation-pointer",
+        choices=("none", "cursor", "laser"),
+        default="none",
+        help="Pointer that follows native animation targets, independent of Spotlight.",
     )
     render.add_argument(
         "--animation-order-policy",
