@@ -28,14 +28,43 @@ from .ffmpeg import find_ffmpeg_pair as _shared_ffmpeg_pair
 
 try:
     import edge_tts
+    from edge_tts.exceptions import (
+        NoAudioReceived,
+        UnexpectedResponse,
+        UnknownResponse,
+        WebSocketError,
+    )
 except ImportError as exc:  # pragma: no cover - depends on local env
     raise SystemExit(
         "[generate_edge_audio] edge_tts is not installed in this Python env. "
         "Install the pptx2video package with its required dependencies."
     ) from exc
 
+# Transport-level failures worth another attempt. A malformed request would
+# fail identically every time, so the list stays narrow on purpose.
+TRANSIENT_TTS_ERRORS: tuple[type[BaseException], ...] = (
+    NoAudioReceived,
+    WebSocketError,
+    UnexpectedResponse,
+    UnknownResponse,
+    ConnectionError,
+    TimeoutError,
+    asyncio.TimeoutError,
+    OSError,
+)
+
 
 DEFAULT_VOICE = "en-US-AriaNeural"
+
+# Edge TTS is a remote service reached over a WebSocket, once per cache miss.
+# A session that closes without delivering audio raises NoAudioReceived, which
+# is transient far more often than it is a problem with the text: the same
+# input usually succeeds moments later. Without a retry, one such session ends
+# the whole run and discards every clip synthesized before it, so a deck fails
+# after minutes of work for a reason that has nothing to do with the deck.
+TTS_MAX_ATTEMPTS = max(1, int(os.environ.get("PPTX2VIDEO_TTS_ATTEMPTS", "4")))
+TTS_RETRY_BASE_SECONDS = 1.5
+TTS_RETRY_MAX_SECONDS = 20.0
 TIMINGS_SCHEMA_VERSION = "paper2video_edge_word_boundaries.v1"
 TTS_CACHE_SCHEMA_VERSION = "paper2video_tts_cache.v1"
 TTS_PROVIDER = "edge-tts"
@@ -382,6 +411,58 @@ def ensure_minimum_audio_duration(path: Path, minimum_seconds: float) -> bool:
     return True
 
 
+async def _synthesize_with_retry(
+    text: str,
+    *,
+    voice: str,
+    rate: str,
+    pitch: str,
+    out_path: Path,
+    collect_timings: bool,
+    label: str,
+) -> list[dict]:
+    """Synthesize one unit, retrying transient service failures.
+
+    Returns word boundaries when requested. Raises the final exception with the
+    unit named, so a persistent failure identifies which text to look at rather
+    than only reporting that some request returned no audio.
+    """
+    last_error: BaseException | None = None
+    for attempt in range(1, TTS_MAX_ATTEMPTS + 1):
+        try:
+            if collect_timings:
+                return await synthesize_section_with_timings(
+                    text, voice=voice, rate=rate, pitch=pitch, out_path=out_path
+                )
+            await synthesize_section(
+                text, voice=voice, rate=rate, pitch=pitch, out_path=out_path
+            )
+            return []
+        except TRANSIENT_TTS_ERRORS as exc:
+            last_error = exc
+            if attempt >= TTS_MAX_ATTEMPTS:
+                break
+            # Exponential backoff. Edge TTS shrugs off a brief pause far more
+            # reliably than an immediate retry against the same endpoint.
+            delay = min(
+                TTS_RETRY_MAX_SECONDS,
+                TTS_RETRY_BASE_SECONDS * (2 ** (attempt - 1)),
+            )
+            print(
+                f"[edge-tts] {label}: attempt {attempt}/{TTS_MAX_ATTEMPTS} failed "
+                f"({type(exc).__name__}: {exc}); retrying in {delay:.1f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            await asyncio.sleep(delay)
+
+    raise RuntimeError(
+        f"Edge TTS failed for {label} after {TTS_MAX_ATTEMPTS} attempt(s): "
+        f"{type(last_error).__name__}: {last_error}. "
+        f"Text ({len(text)} chars): {text[:120]!r}"
+    ) from last_error
+
+
 async def _materialize_tts_unit(
     text: str,
     *,
@@ -392,6 +473,7 @@ async def _materialize_tts_unit(
     collect_timings: bool,
     cache_dir: Path | None,
     provider_version: str,
+    label: str = "",
 ) -> tuple[list[dict], dict[str, str]]:
     normalized_text = normalize_script_text(text)
     identity = build_tts_cache_identity(
@@ -412,23 +494,15 @@ async def _materialize_tts_unit(
             print(f"[edge-tts] cache hit {identity['cache_key'][:12]} -> {out_path}")
             return words, {**identity, "cache_status": "hit"}
 
-    if collect_timings:
-        words = await synthesize_section_with_timings(
-            normalized_text,
-            voice=voice,
-            rate=rate,
-            pitch=pitch,
-            out_path=out_path,
-        )
-    else:
-        await synthesize_section(
-            normalized_text,
-            voice=voice,
-            rate=rate,
-            pitch=pitch,
-            out_path=out_path,
-        )
-        words = []
+    words = await _synthesize_with_retry(
+        normalized_text,
+        voice=voice,
+        rate=rate,
+        pitch=pitch,
+        out_path=out_path,
+        collect_timings=collect_timings,
+        label=label or identity["cache_key"][:12],
+    )
     if cache_dir is not None:
         store_cached_tts(
             cache_dir,
@@ -685,6 +759,7 @@ async def synthesize_all(
                         collect_timings=collect_timings,
                         cache_dir=cache_dir,
                         provider_version=provider_version,
+                        label=f"section {sid} part {index + 1}/{len(parts)}",
                     )
                     pre_roll_seconds = float(part.get("pre_roll_seconds") or 0.0)
                     sequenced_part_path = parts_dir / f"part-{index + 1:04d}.sequenced.mp3"
