@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from .browser import executable_file, find_system_chromium
+from .check_video_package import NON_BLOCKING_WARNING_CODES
 from .ffmpeg import resolve_ffmpeg, resolved_runtime_environment
 from .render_parameters import (
     DEFAULT_FPS,
@@ -345,12 +346,57 @@ def _render(args: argparse.Namespace) -> int:
         report = json.loads(report_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"strict QA report is missing or invalid: {report_path}: {exc}") from exc
-    counts = report.get("counts") or {}
-    if not report.get("passed") or counts.get("error") or counts.get("warning"):
-        raise SystemExit(f"strict QA did not pass cleanly: {report_path}")
-    print(f"[pptx2video] Strict QA passed with 0 errors and 0 warnings: {report_path}")
+
+    findings = report.get("findings") or []
+    errors = [f for f in findings if f.get("severity") == "error"]
+    blocking_warnings = [
+        f
+        for f in findings
+        if f.get("severity") == "warning"
+        and f.get("code") not in NON_BLOCKING_WARNING_CODES
+    ]
+    # `passed` already encodes the checker's own policy, including which warning
+    # codes are exempt. Re-deriving a verdict from raw counts here would
+    # silently override that policy -- an exempt-only package reports
+    # `passed: true` yet a non-zero warning count.
+    gate_passed = bool(report.get("passed"))
+
+    if args.qa_mode == "warn-only":
+        if errors:
+            _print_findings("blocking error", errors)
+            raise SystemExit(
+                f"QA found {len(errors)} error(s); --qa-mode warn-only still fails on errors: {report_path}"
+            )
+        if not gate_passed:
+            _print_findings("warning (not blocking in warn-only mode)", blocking_warnings)
+            print(
+                f"[pptx2video] QA did not pass, delivering anyway under --qa-mode warn-only: {report_path}"
+            )
+        else:
+            print(f"[pptx2video] QA passed: {report_path}")
+        print(f"[pptx2video] Video: {output / 'video.mp4'}")
+        return 0
+
+    if not gate_passed:
+        _print_findings("blocking error", errors)
+        _print_findings("blocking warning", blocking_warnings)
+        exempt = len([f for f in findings if f.get("severity") == "warning"]) - len(blocking_warnings)
+        summary = f"{len(errors)} error(s), {len(blocking_warnings)} blocking warning(s)"
+        if exempt:
+            summary += f" ({exempt} exempt warning(s) ignored)"
+        raise SystemExit(f"strict QA did not pass: {summary}: {report_path}")
+
+    print(f"[pptx2video] Strict QA passed: {report_path}")
     print(f"[pptx2video] Video: {output / 'video.mp4'}")
     return 0
+
+
+def _print_findings(label: str, findings: list[dict]) -> None:
+    """Name what actually blocked the gate instead of only pointing at the JSON."""
+    for finding in findings:
+        location = finding.get("location")
+        where = f" [{location}]" if location else ""
+        print(f"[pptx2video] {label}: {finding.get('code')}{where}: {finding.get('message')}")
 
 
 def _bootstrap(args: argparse.Namespace) -> int:
@@ -392,7 +438,10 @@ def _parser() -> argparse.ArgumentParser:
         help="Also check Playwright and a system or bundled Chromium browser",
     )
 
-    render = subparsers.add_parser("render", help="Render a fresh strictly checked video bundle")
+    render = subparsers.add_parser(
+        "render",
+        help="Render a fresh QA-checked video bundle (see --qa-mode)",
+    )
     render.add_argument("pptx", type=Path, help="Edited PowerPoint file at any local path")
     render.add_argument("output", type=Path, help="New output bundle path; it must not exist")
     render.add_argument("--resolution", choices=("720p", "1080p", "1440p", "4k"), default="1080p")
@@ -513,6 +562,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     render.add_argument("--no-subtitles", action="store_true")
     render.add_argument("--keep-temp", action="store_true")
+    render.add_argument(
+        "--qa-mode",
+        choices=("strict", "warn-only"),
+        default="warn-only",
+        help=(
+            "warn-only (default) runs the full QA pass and writes the same "
+            "report, but only errors fail the render; warnings are printed and "
+            "the bundle is still delivered. strict additionally fails on any "
+            "non-exempt warning -- pass it explicitly for final delivery."
+        ),
+    )
 
     bootstrap = subparsers.add_parser(
         "bootstrap",
