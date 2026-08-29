@@ -68,29 +68,50 @@ etree.register_namespace("p2v", SCRIPT_PROVENANCE_NS)
 etree.register_namespace("p2vs", SEMANTIC_PROVENANCE_NS)
 
 # PPT Master's established presetID/presetSubtype compatibility contract.
+# presetID identifies the effect; presetSubtype carries its direction or shape
+# variant, and one effect legitimately ships under several subtypes. PowerPoint
+# itself emits one set, and generators driving the MsoAnimEffect enumeration
+# emit another for the same visible effect -- ppt-master writes Wipe In as
+# ("22", "4") where PowerPoint writes ("22", "1").
+#
+# Listing only one variant per effect rejected decks that were valid
+# PowerPoint. Ten common entrances were affected, including Wipe and Zoom, so
+# an authoring tool picking any of them aborted the render at bootstrap with
+# "unsupported native PowerPoint entrance tuple". Both spellings map to the
+# same strategy, so accepting both changes nothing downstream.
 EFFECT_NAMES = {
     ("1", "0"): "Appear",
     ("10", "0"): "Fade In",
     ("2", "4"): "Fly In",
     ("42", "8"): "Cut In",
     ("23", "0"): "Zoom In",
+    ("23", "16"): "Zoom In",
     ("22", "1"): "Wipe In",
+    ("22", "4"): "Wipe In",
     ("16", "21"): "Split In",
     ("3", "10"): "Blinds In",
     ("5", "6"): "Checkerboard In",
+    ("5", "10"): "Checkerboard In",
     ("9", "0"): "Dissolve In",
     ("14", "10"): "Random Bars In",
     ("12", "4"): "Peek In",
     ("21", "0"): "Wheel In",
+    ("21", "1"): "Wheel In",
     ("4", "0"): "Box In",
+    ("4", "16"): "Box In",
     ("6", "0"): "Circle In",
+    ("6", "16"): "Circle In",
     ("8", "0"): "Diamond In",
+    ("8", "16"): "Diamond In",
     ("13", "0"): "Plus In",
+    ("13", "16"): "Plus In",
     ("18", "12"): "Strips In",
     ("20", "0"): "Wedge In",
     ("17", "0"): "Stretch In",
+    ("17", "10"): "Stretch In",
     ("50", "0"): "Expand In",
     ("19", "0"): "Swivel In",
+    ("19", "10"): "Swivel In",
 }
 
 VIDEO_EFFECT_SECONDS = {
