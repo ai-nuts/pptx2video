@@ -15,6 +15,7 @@ import math
 import posixpath
 import re
 import shutil
+import sys
 import tempfile
 import unicodedata
 from collections import OrderedDict
@@ -112,7 +113,22 @@ EFFECT_NAMES = {
     ("50", "0"): "Expand In",
     ("19", "0"): "Swivel In",
     ("19", "10"): "Swivel In",
+    # presetID 42 carries two distinct effects rather than two directions of
+    # one: subtype 8 is Cut In, subtype 0 is Ascend. Ascend rises into place,
+    # so Fly In represents it far better than the generic fallback would.
+    ("42", "0"): "Fly In",
 }
+
+# Entrances with no mapping at all. PowerPoint defines far more of them than
+# this runtime implements strategies for -- Bounce, Spiral, Light Speed and
+# roughly thirty others -- and any one of them used to abort the whole render.
+#
+# A deck is not broken for using one: the shape does enter, and Fade In is an
+# honest reduction of "something appears here". Refusing to render is the worse
+# answer, because it discards a deck that is otherwise entirely valid over one
+# decorative choice. The substitution is reported per effect so it is visible
+# rather than silent.
+UNSUPPORTED_ENTRANCE_FALLBACK = "Fade In"
 
 VIDEO_EFFECT_SECONDS = {
     "Appear": 0.12,
@@ -865,8 +881,13 @@ def _native_effects(slide_root: etree._Element) -> list[dict[str, object]]:
         if effect_kind == "entr":
             name = EFFECT_NAMES.get((preset_id, subtype))
             if name is None:
-                raise ProtocolError(
-                    f"unsupported native PowerPoint entrance tuple {(preset_id, subtype)!r}"
+                name = UNSUPPORTED_ENTRANCE_FALLBACK
+                print(
+                    "[video_pptx_protocol] entrance tuple "
+                    f"{(preset_id, subtype)!r} has no mapped strategy; "
+                    f"rendering it as {name}",
+                    file=sys.stderr,
+                    flush=True,
                 )
             kind = "entrance"
         else:
