@@ -587,6 +587,18 @@ def main() -> int:
         action="store_true",
         help="Debug only: skip the final strict package gate.",
     )
+    parser.add_argument(
+        "--qa-mode",
+        choices=("strict", "warn-only"),
+        default="strict",
+        help=(
+            "Which findings fail the package gate. strict fails on any "
+            "non-exempt warning; warn-only fails only on errors. QA runs and "
+            "writes its report either way. The public CLI forwards its own "
+            "--qa-mode here; the default stays strict so a direct call to this "
+            "module keeps its historical behaviour."
+        ),
+    )
     args = parser.parse_args()
 
     source_pptx = args.pptx.resolve()
@@ -1012,10 +1024,17 @@ def main() -> int:
             str(timeline_path),
             "--require-word-timings",
             "--require-timeline",
-            "--strict",
             "--out",
             str(qa_path),
         )
+        # Gate severity is the caller's decision. Hardcoding --strict here made
+        # the public --qa-mode flag inert: this inner check failed first and
+        # exited non-zero, so cli.py never reached the verdict its own flag
+        # governs. warn-only passes neither --strict nor --fail-on-warning,
+        # which is how check_video_package expresses "errors block, warnings
+        # are reported" (fail_on_warning = args.fail_on_warning or args.strict).
+        if args.qa_mode == "strict":
+            qa_command.append("--strict")
         if int(manifest.get("effect_count") or 0) > 0:
             qa_command.extend(
                 ["--require-animations", "--require-animation-order-authority"]

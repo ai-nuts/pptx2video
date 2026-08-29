@@ -335,6 +335,11 @@ def _render(args: argparse.Namespace) -> int:
         command.append("--no-subtitles")
     if args.keep_temp:
         command.append("--keep-temp")
+    # The renderer runs its own package gate before returning, and that check
+    # decides the exit status this function sees. Forward the mode so a
+    # warn-only run is warn-only end to end; otherwise the inner gate fails
+    # first and the verdict below never runs.
+    command.extend(["--qa-mode", args.qa_mode])
 
     try:
         _run_runtime("render_edited_pptx.py", command)
