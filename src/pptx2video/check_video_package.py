@@ -2766,6 +2766,16 @@ def main() -> None:
     parser.add_argument("--max-tts-rate-adjust-percent", type=float, default=8.0, help="Hard maximum absolute TTS rate adjustment allowed by the final QA gate.")
     parser.add_argument("--strict", action="store_true", help="Final-package hard gate: require audio, MP4, rendered frames, and fail on warnings.")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--allow-warnings",
+        action="store_true",
+        help=(
+            "Keep every --strict requirement and every finding in the report, "
+            "but do not let warnings fail the process. Errors still fail. For "
+            "callers that gate on the report themselves and need it to carry "
+            "full strict evidence."
+        ),
+    )
     parser.add_argument("--fail-on-warning", action="store_true")
     args = parser.parse_args()
 
@@ -2878,7 +2888,14 @@ def main() -> None:
         "warning": sum(1 for f in findings if f.severity == "warning"),
         "info": sum(1 for f in findings if f.severity == "info"),
     }
-    fail_on_warning = args.fail_on_warning or args.strict
+    # --allow-warnings separates "how thoroughly do I check" from "what fails
+    # the process". --strict means both today, which leaves a caller that wants
+    # complete evidence but tolerates warnings with nowhere to go: dropping
+    # --strict also drops the evidence requirements and marks the report
+    # non-strict, and consumers reasonably treat a non-strict report as
+    # inadmissible. This keeps every --strict requirement and only relaxes the
+    # exit status.
+    fail_on_warning = (args.fail_on_warning or args.strict) and not args.allow_warnings
     passed = findings_pass_gate(findings, fail_on_warning=fail_on_warning)
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -2905,6 +2922,7 @@ def main() -> None:
         "options": {
             "strict": args.strict,
             "fail_on_warning": fail_on_warning,
+            "allow_warnings": bool(args.allow_warnings),
             "require_audio": require_audio,
             "require_mp4": require_mp4,
             "require_visual_cues": args.require_visual_cues,
