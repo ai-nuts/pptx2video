@@ -339,12 +339,19 @@ def _render(args: argparse.Namespace) -> int:
     # decides the exit status this function sees. Forward the mode so a
     # warn-only run is warn-only end to end; otherwise the inner gate fails
     # first and the verdict below never runs.
-    command.extend(["--qa-mode", args.qa_mode])
+    if args.qa_mode == "off":
+        command.append("--no-qa")
+    else:
+        command.extend(["--qa-mode", args.qa_mode])
 
     try:
         _run_runtime("render_edited_pptx.py", command)
     except subprocess.CalledProcessError as exc:
         return exc.returncode or 1
+
+    if args.qa_mode == "off":
+        print(f"[pptx2video] QA skipped (--qa-mode off): {output / 'video.mp4'}")
+        return 0
 
     report_path = output / "assets" / "meta" / "reports" / "video_qa_report.json"
     try:
@@ -569,13 +576,15 @@ def _parser() -> argparse.ArgumentParser:
     render.add_argument("--keep-temp", action="store_true")
     render.add_argument(
         "--qa-mode",
-        choices=("strict", "warn-only"),
+        choices=("strict", "warn-only", "off"),
         default="warn-only",
         help=(
             "warn-only (default) runs the full QA pass and writes the same "
             "report, but only errors fail the render; warnings are printed and "
             "the bundle is still delivered. strict additionally fails on any "
-            "non-exempt warning -- pass it explicitly for final delivery."
+            "non-exempt warning -- pass it explicitly for final delivery. off "
+            "skips the gate entirely and delivers whatever rendered, for "
+            "previews where a blocked bundle is worse than a flawed one."
         ),
     )
 

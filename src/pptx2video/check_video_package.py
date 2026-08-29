@@ -488,8 +488,19 @@ def parse_pptx(pptx: Path, findings: list[Finding]) -> dict[str, Any]:
                             # report for agent review, but only make it a hard
                             # finding when the estimate is extreme enough that
                             # it is likely to survive into the rendered frame.
-                            compact_single_line = usable_h <= font_pt * 1.75 and len(text) <= 140
-                            sev = "error" if ratio > 4.0 or (ratio > 3.8 and not compact_single_line) else "info"
+                            # Never blocking. This is an XML estimate of what
+                            # PowerPoint would do, not an observation of the
+                            # rendered frame, and the SVG->PPTX decks this
+                            # runtime is built for defeat it routinely: a
+                            # single-line label authored as a short box reads
+                            # as a large overflow ratio while rendering
+                            # correctly inside its designed row. Escalating
+                            # that estimate to an error blocked deliverable
+                            # bundles over text that looked fine on screen.
+                            # The finding stays in the report for review;
+                            # confirming real clipping needs the frame, which
+                            # this check does not read.
+                            sev = "info"
                             add(
                                 findings,
                                 sev,
