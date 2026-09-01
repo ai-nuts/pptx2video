@@ -2272,9 +2272,16 @@ def _animation_overlay_filters(
             f"max(abs(X-W/2)/max(1,W/2),abs(Y-H/2)/max(1,H/2)),{alpha_progress})'"
         )
     elif strategy == "diamond_reveal":
+        # The L1 norm below peaks at 2 (the four corners), not 1 like the L-inf
+        # norm box_reveal uses, so the threshold has to sweep 0..2. Comparing it
+        # against a bare 0..1 alpha_progress left the corner triangles masked at
+        # every progress value, ending the entrance on the inscribed diamond
+        # instead of the full rectangle.
         source_filter += (
             ",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
-            f"a='alpha(X,Y)*lte(abs(X-W/2)/(W/2)+abs(Y-H/2)/(H/2),{alpha_progress})'"
+            "a='alpha(X,Y)*lte("
+            "abs(X-W/2)/max(1,W/2)+abs(Y-H/2)/max(1,H/2),"
+            f"2*{alpha_progress})'"
         )
     elif strategy == "plus_reveal":
         source_filter += (
