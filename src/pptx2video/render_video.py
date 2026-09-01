@@ -2213,31 +2213,51 @@ def _animation_overlay_filters(
         x_expr = f"{layer.x}-{travel}*(1-{progress})"
     elif strategy == "wipe_from_left":
         # `crop` dimensions are configured once, so use a per-frame alpha mask.
+        # Closed at both ends (X spans 0..W inclusive), so sweep over [-eps, W]
+        # like split_center_approx: `X <= W*0` used to expose the X=0 column
+        # before the wipe started, and plain `lt` would instead strand the X=W
+        # column at p=1.
+        wipe_eps = 0.02
         source_filter += (
             ",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
-            f"a='alpha(X,Y)*lte(X,W*{alpha_progress})'"
+            f"a='alpha(X,Y)*lte(X,W*({1 + wipe_eps:.3f}*{alpha_progress}-{wipe_eps:.3f}))'"
         )
     elif strategy == "split_center_approx":
+        # Closed at both ends (0 at the centre column, W/2 at the edges), so
+        # this needs the same [-eps, max] sweep as plus_reveal: plain `lt` would
+        # strand the two edge columns instead of the centre one.
+        split_eps = 0.02
         source_filter += (
             ",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
-            f"a='alpha(X,Y)*lte(abs(X-W/2),W/2*{alpha_progress})'"
+            "a='alpha(X,Y)*lte(abs(X-W/2),"
+            f"W/2*({1 + split_eps:.3f}*{alpha_progress}-{split_eps:.3f}))'"
         )
     elif strategy == "blinds_vertical_approx":
+        # `lt`, not `lte`: mod() has the half-open range [0, s), so `mod <= s*0`
+        # revealed the mod==0 column of every slat before the entrance started.
+        # Strict `<` hides it at p=0 and still reveals everything at p=1,
+        # because mod is always strictly below s.
         source_filter += (
             ",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
-            f"a='alpha(X,Y)*lte(mod(X,max(1,W/8)),max(1,W/8)*{alpha_progress})'"
+            f"a='alpha(X,Y)*lt(mod(X,max(1,W/8)),max(1,W/8)*{alpha_progress})'"
         )
     elif strategy == "checkerboard_tiles_approx":
+        # Normalize the 8 tile buckets as (k+1)/8, not k/7, so the range is
+        # (0, 1] instead of [0, 1]. Bucket 0 used to sit at exactly 0 and was
+        # revealed by `<= 0` before the entrance began; now the first bucket
+        # appears at p=1/8 and the last still lands exactly on p=1, giving all
+        # eight an equal slice of the duration.
         source_filter += (
             ",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
             "a='alpha(X,Y)*lte("
-            f"mod(floor(X/max(1,W/8))+3*floor(Y/max(1,H/6)),8)/7,{alpha_progress})'"
+            f"(mod(floor(X/max(1,W/8))+3*floor(Y/max(1,H/6)),8)+1)/8,{alpha_progress})'"
         )
     elif strategy == "random_bars_deterministic_approx":
+        # Same (k+1)/N normalization as the checkerboard, over 11 bars.
         source_filter += (
             ",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
             "a='alpha(X,Y)*lte("
-            f"mod(5*floor(X/max(1,W/11)),11)/10,{alpha_progress})'"
+            f"(mod(5*floor(X/max(1,W/11)),11)+1)/11,{alpha_progress})'"
         )
     elif strategy == "zoom_in":
         # Scale into a fixed transparent canvas so overlay geometry never jumps.
@@ -2284,15 +2304,23 @@ def _animation_overlay_filters(
             f"2*{alpha_progress})'"
         )
     elif strategy == "plus_reveal":
+        # This norm is closed at BOTH ends: 0 along the centre cross, 1 at the
+        # corners. `lte` against a bare 0..1 progress revealed the cross before
+        # the entrance started, and plain `lt` would instead strand the corners
+        # forever. Sweep the threshold over [-eps, 1] so p=0 hides everything
+        # (no pixel is negative) and p=1 still lands exactly on the corners.
+        plus_eps = 0.02
         source_filter += (
             ",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
             "a='alpha(X,Y)*lte("
-            f"min(abs(X-W/2)/max(1,W/2),abs(Y-H/2)/max(1,H/2)),{alpha_progress})'"
+            "min(abs(X-W/2)/max(1,W/2),abs(Y-H/2)/max(1,H/2)),"
+            f"{1 + plus_eps:.3f}*{alpha_progress}-{plus_eps:.3f})'"
         )
     elif strategy == "diagonal_strips_approx":
+        # `lt` for the same half-open mod() range as blinds_vertical_approx.
         source_filter += (
             ",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
-            f"a='alpha(X,Y)*lte(mod(X+Y,max(1,(W+H)/12)),max(1,(W+H)/12)*{alpha_progress})'"
+            f"a='alpha(X,Y)*lt(mod(X+Y,max(1,(W+H)/12)),max(1,(W+H)/12)*{alpha_progress})'"
         )
     elif strategy == "diagonal_wedge_approx":
         source_filter += (
